@@ -60,7 +60,19 @@ maven_setup(){
 
     mv target/shipping-1.0.jar shipping.jar &>>$LOG_FILE
     VALIDATE $? "Moving and renaming the jar file"
-    
+
+}
+
+python_setup(){
+    dnf install python3 gcc python3-devel -y &>>$LOG_FILE
+    VALIDATE $? "installing python3 packages"
+
+    pip3 install -r requirements.txt &>>$LOG_FILE
+    VALIDATE $? "installing dependencies"
+
+    cp $SCRIPT_DIR/payment.service /etc/systemd/system/payment.service &>>$LOG_FILE
+    VALIDATE $? "copying payment service"
+
 }
 
 systemd_setup(){
