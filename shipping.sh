@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -euo pipefail
+
 START_TIME=$(date +%s)
 USERID=$(id -u)
 R="\e[31m"
@@ -8,94 +10,107 @@ Y="\e[33m"
 N="\e[0m"
 
 LOGS_FOLDER="/var/log/Roboshop-logs"
-SCRIPT_NAME=$(echo $0 | cut -d "." -f1)
+SCRIPT_NAME=$(basename "$0" | cut -d "." -f1)
 LOG_FILE="$LOGS_FOLDER/$SCRIPT_NAME.log"
 SCRIPT_DIR="$PWD"
 
 mkdir -p "$LOGS_FOLDER"
-echo "script started executing at: $(date)" | tee -a $LOG_FILE
+echo "script started executing at: $(date)" | tee -a "$LOG_FILE"
 
-# check the user has root priveleges or not
-if [ $USERID -ne 0 ]
-then
-    echo -e "$R ERROR:: please run this script with root access $N" | tee -a $LOG_FILE
-    exit 1 #give other than 0 upto 127
+# Check for root privileges
+if [ "$USERID" -ne 0 ]; then
+    echo -e "$R ERROR:: please run this script with root access $N" | tee -a "$LOG_FILE"
+    exit 1
 else
-    echo "you are running with root access" | tee -a $LOG_FILE
+    echo "You are running with root access" | tee -a "$LOG_FILE"
 fi
 
-echo "please enter root password to setup"
+# Ask for MySQL root password
+echo "Please enter MySQL root password:"
 read -s MYSQL_ROOT_PASSWORD
 
-# validate functions takes input as exit status, what command they tried to install
+# Function to validate commands
 VALIDATE() {
   if [ "$1" -eq 0 ]; then
-    echo -e "$2 is ... ${G}SUCCESS${N}" | tee -a "$LOG_FILE"
+    echo -e "$(date +%F' '%T) - $2 is ... ${G}SUCCESS${N}" | tee -a "$LOG_FILE"
   else 
-    echo -e "$2 is ... ${G}FAILURE${N}" | tee -a "$LOG_FILE"
+    echo -e "$(date +%F' '%T) - $2 is ... ${R}FAILURE${N}" | tee -a "$LOG_FILE"
     exit 1
   fi
 }
 
-dnf install maven -y &>>$LOG_FILE
-VALIDATE $? "installing maven and java"
+# Function to load MySQL schema
+load_mysql_data() {
+  echo "Loading data into MySQL..." | tee -a "$LOG_FILE"
+  mysql -h mysql.devops84.store -u root -p"$MYSQL_ROOT_PASSWORD" < /app/db/schema.sql &>>"$LOG_FILE"
+  mysql -h mysql.devops84.store -u root -p"$MYSQL_ROOT_PASSWORD" < /app/db/app-user.sql &>>"$LOG_FILE"
+  mysql -h mysql.devops84.store -u root -p"$MYSQL_ROOT_PASSWORD" < /app/db/master-data.sql &>>"$LOG_FILE"
+  VALIDATE $? "loading data into mysql"
+}
 
-id roboshop 
-if [ $? -ne 0 ]
-then
-    useradd --system --home /app --shell /sbin/nologin --comment "roboshop system user" roboshop &>>$LOG_FILE
+# Install Maven
+dnf install maven -y &>>"$LOG_FILE"
+VALIDATE $? "Installing Maven and Java"
+
+# Create roboshop user if not exists
+if ! id roboshop &>/dev/null; then
+    useradd --system --home /app --shell /sbin/nologin --comment "roboshop system user" roboshop &>>"$LOG_FILE"
     VALIDATE $? "Creating roboshop system user"
 else
-    echo -e "system user roboshop already created ... $Y skipping $N"
+    echo -e "System user roboshop already created ... $Y skipping $N"
 fi
 
+# Create /app directory
 mkdir -p /app 
-VALIDATE $? "creating app directory"
+VALIDATE $? "Creating /app directory"
 
-curl -L -o /tmp/shipping.zip https://roboshop-artifacts.s3.amazonaws.com/shipping-v3.zip &>>$LOG_FILE
-VALIDATE $? "downloading shipping"
+# Download and unzip shipping app
+curl -L -o /tmp/shipping.zip https://roboshop-artifacts.s3.amazonaws.com/shipping-v3.zip &>>"$LOG_FILE"
+VALIDATE $? "Downloading shipping application"
 
 rm -rf /app/*
 cd /app 
-unzip /tmp/shipping.zip &>>$LOG_FILE
-VALIDATE $? "unzipping shipping"
+unzip /tmp/shipping.zip &>>"$LOG_FILE"
+VALIDATE $? "Unzipping shipping application"
 
-mvn clean package &>>$LOG_FILE
-VALIDATE $? "packaging the shipping application"
+# Build and move jar
+mvn clean package &>>"$LOG_FILE"
+VALIDATE $? "Packaging the shipping application"
 
-mv target/shipping-1.0.jar shipping.jar &>>$LOG_FILE
-VALIDATE $? "Moving and renaming the jar file"
+mv target/shipping-1.0.jar shipping.jar &>>"$LOG_FILE"
+VALIDATE $? "Renaming jar file to shipping.jar"
 
-cp $SCRIPT_DIR/shipping.service /etc/systemd/system/shipping.service
-VALIDATE $? "copying of shipping service"
+# Setup systemd service
+cp "$SCRIPT_DIR/shipping.service" /etc/systemd/system/shipping.service
+VALIDATE $? "Copying shipping.service to systemd"
 
-systemctl daemon-reload &>>$LOG_FILE
-VALIDATE $? "daemon reload"
+systemctl daemon-reload &>>"$LOG_FILE"
+VALIDATE $? "Systemd daemon-reload"
 
-systemctl enable shipping &>>$LOG_FILE
-VALIDATE $? "enabling shipping"
+systemctl enable shipping &>>"$LOG_FILE"
+VALIDATE $? "Enabling shipping service"
 
-systemctl start shipping &>>$LOG_FILE
-VALIDATE $? "starting shipping"
+systemctl start shipping &>>"$LOG_FILE"
+VALIDATE $? "Starting shipping service"
 
-dnf install mysql -y &>>$LOG_FILE
-VALIDATE $? "Installing mysql"
+# Install MySQL client
+dnf install mysql -y &>>"$LOG_FILE"
+VALIDATE $? "Installing MySQL client"
 
-mysql -h mysql.devops84.store -u root -p"$MYSQL_ROOT_PASSWORD" -e 'use cities'
-if [ $? -ne 0 ]
-then
-  mysql -h mysql.devops84.store -u root -p"$MYSQL_ROOT_PASSWORD" < /app/db/schema.sql &>>$LOG_FILE
-  mysql -h mysql.devops84.store -u root -p"$MYSQL_ROOT_PASSWORD" < /app/db/app-user.sql &>>$LOG_FILE
-  mysql -h mysql.devops84.store -u root -p"$MYSQL_ROOT_PASSWORD" < /app/db/master-data.sql &>>$LOG_FILE
-  VALIDATE $? "loading data into mysql"
+# Check if cities table exists
+mysql -h mysql.devops84.store -u root -p"$MYSQL_ROOT_PASSWORD" -e "USE cities; SHOW TABLES LIKE 'locations';" &>/dev/null
+if [ $? -ne 0 ]; then
+  load_mysql_data
 else 
-  echo -e "Data is already loaded into mysql ... $Y skipping $N"
+  echo -e "Data is already loaded into MySQL ... $Y skipping $N" | tee -a "$LOG_FILE"
 fi
 
-systemctl restart shipping &>>$LOG_FILE
-VALIDATE $? "restart shipping"
+# Restart shipping service
+systemctl restart shipping &>>"$LOG_FILE"
+VALIDATE $? "Restarting shipping service"
 
+# Final time calculation
 END_TIME=$(date +%s)
-TOTAL_TIME=$(( $END_TIME - $START_TIME ))
+TOTAL_TIME=$(( END_TIME - START_TIME ))
 
-echo -e "script execution completed successfully, $Y time taken: $TOTAL_TIME seconds $N" | tee -a $LOG_FILE
+echo -e "Script execution completed successfully, $Y time taken: $TOTAL_TIME seconds $N" | tee -a "$LOG_FILE"
