@@ -17,8 +17,8 @@ echo "script started executing at: $(date)" | tee -a $LOG_FILE
 
 app_setup(){
     id roboshop &>>$LOG_FILE
-  if [ $? -ne 0 ]
-  then
+    if [ $? -ne 0 ]
+    then
      useradd --system --home /app --shell /sbin/nologin --comment "roboshop system user" roboshop &>>$LOG_FILE
      VALIDATE $? "Creating roboshop system user"
   else
@@ -49,6 +49,18 @@ nodejs_setup(){
 
     npm install &>>$LOG_FILE
     VALIDATE $? "installing dependencies"
+}
+
+maven_setup(){
+    dnf install maven -y &>>$LOG_FILE
+    VALIDATE $? "installing maven and java"
+
+    mvn clean package &>>$LOG_FILE
+    VALIDATE $? "packaging the shipping application"
+
+    mv target/shipping-1.0.jar shipping.jar &>>$LOG_FILE
+    VALIDATE $? "Moving and renaming the jar file"
+    
 }
 
 systemd_setup(){
